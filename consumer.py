@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import pika
@@ -54,6 +55,9 @@ class RabbitConsumer(threading.Thread):
         def on_message(ch: Any, method: Any, properties: Any, body: bytes) -> None:
             delivery_tag = method.delivery_tag
             try:
+                self._cache.set_last_message_processed_at(
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
                 payload = json.loads(body.decode("utf-8"))
                 if not isinstance(payload, dict):
                     logger.warning("bad_message type=%s", type(payload))

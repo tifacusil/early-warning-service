@@ -96,16 +96,7 @@ class RedisCache:
         return out
 
     def record_alert_db(self, alert: Dict[str, Any]) -> None:
-        conn = pymysql.connect(
-            host=config.MYSQL_HOST,
-            port=config.MYSQL_PORT,
-            user=config.MYSQL_USER,
-            password=config.MYSQL_PASS,
-            database=config.MYSQL_DB,
-            autocommit=True,
-            connect_timeout=int(config.MYSQL_CONNECT_TIMEOUT_SECONDS),
-            cursorclass=pymysql.cursors.DictCursor,
-        )
+        conn = self._mysql_connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -156,16 +147,7 @@ class RedisCache:
         if _level_value(alert_level) == 0:
             return []
 
-        conn = pymysql.connect(
-            host=config.MYSQL_HOST,
-            port=config.MYSQL_PORT,
-            user=config.MYSQL_USER,
-            password=config.MYSQL_PASS,
-            database=config.MYSQL_DB,
-            autocommit=True,
-            connect_timeout=int(config.MYSQL_CONNECT_TIMEOUT_SECONDS),
-            cursorclass=pymysql.cursors.DictCursor,
-        )
+        conn = self._mysql_connect()
 
         try:
             with conn.cursor() as cur:
@@ -200,7 +182,7 @@ class RedisCache:
                     start = row.get("quiet_hours_start")
                     end = row.get("quiet_hours_end")
                     if alert_level != "red" and _in_quiet_hours(start, end, now):
-                        pass
+                        continue
                     allowed_user_ids.append(int(row["user_id"]))
 
                 if not allowed_user_ids:
@@ -219,6 +201,197 @@ class RedisCache:
                 return list({t for t in tokens if t})
         finally:
             conn.close()
+
+    def get_push_device_tokens_for_project(self, project_id: str) -> List[str]:
+        if not project_id:
+            return []
+        conn = self._mysql_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT d.device_token
+                    FROM user_project_alert_subscription s
+                    INNER JOIN users u ON u.id = s.user_id
+                    INNER JOIN user_device d ON d.user_id = u.id
+                    WHERE
+                        s.project_id = %s
+                        AND u.status = 'active'
+                        AND s.push_enabled = TRUE
+                        AND d.status = 'active'
+                    """,
+                    (project_id,),
+                )
+                tokens = [str(r["device_token"]) for r in cur.fetchall() if r.get("device_token")]
+                return list({t for t in tokens if t})
+        finally:
+            conn.close()
+
+    def upsert_report_db(self, report: Dict[str, Any]) -> None:
+        conn = self._mysql_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS reports (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        report_id VARCHAR(64) NOT NULL,
+                        project_id VARCHAR(64) NOT NULL,
+                        period ENUM('daily','weekly') NOT NULL,
+                        window_start DATETIME NOT NULL,
+                        window_end DATETIME NOT NULL,
+                        generated_at DATETIME NOT NULL,
+                        content_json JSON NOT NULL,
+                        UNIQUE KEY uk_report (project_id, period, window_start, window_end),
+                        INDEX idx_reports_project_period (project_id, period, generated_at)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    INSERT INTO reports (
+                        report_id,
+                        project_id,
+                        period,
+                        window_start,
+                        window_end,
+                        generated_at,
+                        content_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        report_id = VALUES(report_id),
+                        generated_at = VALUES(generated_at),
+                        content_json = VALUES(content_json)
+                    """,
+                    (
+                        str(report.get("report_id") or ""),
+                        str(report.get("project_id") or ""),
+                        str(report.get("period") or ""),
+                        _parse_mysql_datetime(report.get("window_start")) or "1970-01-01 00:00:00",
+                        _parse_mysql_datetime(report.get("window_end")) or "1970-01-01 00:00:00",
+                        _parse_mysql_datetime(report.get("generated_at")) or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        json.dumps(report, separators=(",", ":"), ensure_ascii=False),
+                    ),
+                )
+        finally:
+            conn.close()
+
+    def get_latest_report_db(self, project_id: str, period: str) -> Optional[Dict[str, Any]]:
+        if not project_id or period not in {"daily", "weekly"}:
+            return None
+        conn = self._mysql_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT content_json
+                    FROM reports
+                    WHERE project_id = %s AND period = %s
+                    ORDER BY generated_at DESC
+                    LIMIT 1
+                    """,
+                    (project_id, period),
+                )
+                row = cur.fetchone()
+                if not row or not row.get("content_json"):
+                    return None
+                try:
+                    value = json.loads(row["content_json"])
+                except json.JSONDecodeError:
+                    return None
+                return value if isinstance(value, dict) else None
+        finally:
+            conn.close()
+
+    def report_exists_db(self, project_id: str, period: str, window_start: str, window_end: str) -> bool:
+        if not project_id or period not in {"daily", "weekly"}:
+            return False
+        ws = _parse_mysql_datetime(window_start)
+        we = _parse_mysql_datetime(window_end)
+        if not ws or not we:
+            return False
+        conn = self._mysql_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM reports
+                    WHERE project_id = %s AND period = %s AND window_start = %s AND window_end = %s
+                    LIMIT 1
+                    """,
+                    (project_id, period, ws, we),
+                )
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+
+    def summarize_alerts_db(self, project_id: str, window_start: str, window_end: str) -> Dict[str, Any]:
+        ws = _parse_mysql_datetime(window_start)
+        we = _parse_mysql_datetime(window_end)
+        if not project_id or not ws or not we:
+            return {"total": 0, "by_level": {"blue": 0, "orange": 0, "red": 0}, "max_speed_mm_day": None, "avg_speed_mm_day": None}
+
+        conn = self._mysql_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        alert_level,
+                        COUNT(*) AS cnt,
+                        MAX(deformation_speed_mm_day) AS max_speed,
+                        AVG(deformation_speed_mm_day) AS avg_speed
+                    FROM alerts
+                    WHERE project_id = %s AND alert_timestamp >= %s AND alert_timestamp < %s
+                    GROUP BY alert_level
+                    """,
+                    (project_id, ws, we),
+                )
+                rows = list(cur.fetchall())
+
+                by = {"blue": 0, "orange": 0, "red": 0}
+                max_speed = None
+                sum_avg = 0.0
+                sum_cnt = 0
+                for r in rows:
+                    lvl = str(r.get("alert_level") or "")
+                    cnt = int(r.get("cnt") or 0)
+                    if lvl in by:
+                        by[lvl] = cnt
+                    if r.get("max_speed") is not None:
+                        m = float(r["max_speed"])
+                        max_speed = m if max_speed is None else max(max_speed, m)
+                    if r.get("avg_speed") is not None and cnt > 0:
+                        sum_avg += float(r["avg_speed"]) * cnt
+                        sum_cnt += cnt
+                total = by["blue"] + by["orange"] + by["red"]
+                avg_speed = (sum_avg / sum_cnt) if sum_cnt > 0 else None
+                return {"total": total, "by_level": by, "max_speed_mm_day": max_speed, "avg_speed_mm_day": avg_speed}
+        finally:
+            conn.close()
+
+    def set_last_message_processed_at(self, iso_ts: str) -> None:
+        self._client.set("early_warning:last_message_processed_at", iso_ts)
+
+    def get_last_message_processed_at(self) -> Optional[str]:
+        v = self._client.get("early_warning:last_message_processed_at")
+        return v if v else None
+
+    def set_last_report_generated_at(self, project_id: str, period: str, iso_ts: str) -> None:
+        self._client.set(f"early_warning:last_report_generated_at:{project_id}:{period}", iso_ts)
+
+    def _mysql_connect(self):
+        return pymysql.connect(
+            host=config.MYSQL_HOST,
+            port=config.MYSQL_PORT,
+            user=config.MYSQL_USER,
+            password=config.MYSQL_PASS,
+            database=config.MYSQL_DB,
+            autocommit=True,
+            connect_timeout=int(config.MYSQL_CONNECT_TIMEOUT_SECONDS),
+            cursorclass=pymysql.cursors.DictCursor,
+        )
 
 
 def _parse_mysql_datetime(value: Any) -> Optional[str]:

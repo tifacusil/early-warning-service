@@ -25,10 +25,12 @@ except ImportError:
 
 
 class AlertPublisher:
-    def __init__(self, channel: pika.adapters.blocking_connection.BlockingChannel) -> None:
+    def __init__(self, channel: Optional[pika.adapters.blocking_connection.BlockingChannel] = None) -> None:
         self._channel = channel
 
     def publish_rabbitmq(self, alert: Dict[str, Any]) -> None:
+        if self._channel is None:
+            return
         project_id = alert.get("project_id")
         level = alert.get("alert_level")
         routing_key = f"alerts.{project_id}.{level}"
@@ -54,40 +56,55 @@ class AlertPublisher:
         except requests.RequestException as exc:
             logger.warning("http_publish_failed url=%s err=%s", target, exc)
 
-    def publish_push(self, alert: Dict[str, Any], *, tokens: Optional[list[str]] = None, topic: Optional[str] = None) -> None:
+    def publish_notification(
+        self,
+        *,
+        title: str,
+        body: str,
+        data: Dict[str, Any],
+        tokens: Optional[list[str]] = None,
+        topic: Optional[str] = None,
+    ) -> None:
         if not _firebase_import_ok:
             return
         if not _ensure_firebase():
             return
 
         resolved_topic = (topic if topic is not None else config.FIREBASE_TOPIC).strip()
-        if tokens is None:
-            tokens_raw = (config.FIREBASE_DEVICE_TOKENS or "").strip()
-            resolved_tokens = [t.strip() for t in tokens_raw.split(",") if t.strip()] if tokens_raw else []
-        else:
-            resolved_tokens = [t for t in tokens if t]
+        resolved_tokens = [t for t in tokens if t] if tokens is not None else []
 
+        notification = messaging.Notification(title=title, body=body)
+        payload = {k: str(v) for k, v in data.items() if v is not None}
+
+        try:
+            if resolved_topic:
+                messaging.send(messaging.Message(topic=resolved_topic, notification=notification, data=payload))
+                return
+            if resolved_tokens:
+                messaging.send_multicast(messaging.MulticastMessage(tokens=resolved_tokens, notification=notification, data=payload))
+        except Exception as exc:
+            logger.warning("push_publish_failed err=%s", exc)
+
+    def publish_push(self, alert: Dict[str, Any], *, tokens: Optional[list[str]] = None, topic: Optional[str] = None) -> None:
         level = str(alert.get("alert_level") or "")
         sensor_id = str(alert.get("sensor_id") or "")
         speed = alert.get("deformation_speed_mm_day")
         speed_str = str(speed) if speed is not None else ""
+        if tokens is None:
+            tokens_raw = (config.FIREBASE_DEVICE_TOKENS or "").strip()
+            resolved_tokens = [t.strip() for t in tokens_raw.split(",") if t.strip()] if tokens_raw else []
+        else:
+            resolved_tokens = tokens
 
-        notification = messaging.Notification(
+        data = dict(alert)
+        data["type"] = "early_warning_alert"
+        self.publish_notification(
             title=f"Alerta {level.upper()}",
             body=f"Sensor {sensor_id} velocidad {speed_str} mm/día",
+            data=data,
+            tokens=resolved_tokens,
+            topic=topic,
         )
-
-        data = {k: str(v) for k, v in alert.items() if v is not None}
-        data["type"] = "early_warning_alert"
-
-        try:
-            if resolved_topic:
-                messaging.send(messaging.Message(topic=resolved_topic, notification=notification, data=data))
-                return
-            if resolved_tokens:
-                messaging.send_multicast(messaging.MulticastMessage(tokens=resolved_tokens, notification=notification, data=data))
-        except Exception as exc:
-            logger.warning("push_publish_failed err=%s", exc)
 
 
 def _ensure_firebase() -> bool:

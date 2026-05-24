@@ -44,6 +44,13 @@ MYSQL_PASS = os.getenv("MYSQL_PASS", "")
 MYSQL_DB = os.getenv("MYSQL_DB", "landslide_monitoring")
 MYSQL_CONNECT_TIMEOUT_SECONDS = float(os.getenv("MYSQL_CONNECT_TIMEOUT_SECONDS", "5"))
 
+DATA_ANALYSIS_URL = os.getenv("DATA_ANALYSIS_URL", "")
+DATA_ANALYSIS_TIMEOUT_SECONDS = float(os.getenv("DATA_ANALYSIS_TIMEOUT_SECONDS", "5"))
+
+REPORT_SCHEDULER_ENABLED = os.getenv("REPORT_SCHEDULER_ENABLED", "true").lower() == "true"
+REPORT_CHECK_INTERVAL_SECONDS = _env_int("REPORT_CHECK_INTERVAL_SECONDS", 60)
+REPORT_PUSH_ENABLED = os.getenv("REPORT_PUSH_ENABLED", "true").lower() == "true"
+
 THRESHOLDS = {
     "shangtan": {"red": 20, "orange": 15, "blue": 10},
     "lingzhan": {"red": 15, "orange": 10, "blue": 5},
