@@ -1,0 +1,109 @@
+import json
+import logging
+import threading
+import time
+from typing import Any, Dict, Optional
+
+import pika
+
+import config
+from alert_publisher import AlertPublisher
+from redis_cache import RedisCache
+from threshold_engine import evaluate_message
+
+
+logger = logging.getLogger("early_warning.consumer")
+
+
+def _connection_params() -> pika.ConnectionParameters:
+    credentials = pika.PlainCredentials(config.RABBITMQ_USER, config.RABBITMQ_PASS)
+    return pika.ConnectionParameters(
+        host=config.RABBITMQ_HOST,
+        port=config.RABBITMQ_PORT,
+        credentials=credentials,
+        heartbeat=30,
+        blocked_connection_timeout=60,
+        connection_attempts=5,
+        retry_delay=3,
+    )
+
+
+class RabbitConsumer(threading.Thread):
+    def __init__(self, cache: RedisCache) -> None:
+        super().__init__(name="rabbit-consumer", daemon=True)
+        self._cache = cache
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._consume_once()
+            except Exception as exc:
+                logger.exception("consumer_crash err=%s", exc)
+                time.sleep(2)
+
+    def _consume_once(self) -> None:
+        conn = pika.BlockingConnection(_connection_params())
+        channel = conn.channel()
+        channel.basic_qos(prefetch_count=20)
+        publisher = AlertPublisher(channel)
+
+        def on_message(ch: Any, method: Any, properties: Any, body: bytes) -> None:
+            delivery_tag = method.delivery_tag
+            try:
+                payload = json.loads(body.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    logger.warning("bad_message type=%s", type(payload))
+                    ch.basic_ack(delivery_tag=delivery_tag)
+                    return
+
+                sensor_id = payload.get("sensor_id")
+                previous: Optional[Dict[str, Any]] = None
+                if isinstance(sensor_id, str) and sensor_id:
+                    previous = self._cache.get_last_reading(sensor_id)
+
+                result = evaluate_message(payload, previous)
+                logger.info(
+                    "eval sensor=%s project=%s speed=%s dt=%s threshold=%s level=%s skip=%s",
+                    result.log_fields.get("sensor_id"),
+                    result.log_fields.get("project_id"),
+                    result.log_fields.get("deformation_speed_mm_day"),
+                    result.log_fields.get("dt_seconds"),
+                    result.log_fields.get("threshold_mm_day"),
+                    result.log_fields.get("alert"),
+                    result.log_fields.get("skip_reason"),
+                )
+
+                if result.alert is not None:
+                    publisher.publish_rabbitmq(result.alert)
+                    publisher.publish_http(result.alert)
+                    self._cache.incr_alerts_generated()
+                    self._cache.push_recent_alert(result.alert)
+
+                if result.should_store_current and result.store_payload is not None:
+                    sid = payload.get("sensor_id")
+                    if isinstance(sid, str) and sid:
+                        self._cache.set_last_reading(sid, result.store_payload)
+
+                ch.basic_ack(delivery_tag=delivery_tag)
+            except json.JSONDecodeError:
+                logger.warning("json_decode_error body_len=%s", len(body))
+                ch.basic_ack(delivery_tag=delivery_tag)
+            except Exception as exc:
+                logger.exception("process_failed err=%s", exc)
+                ch.basic_nack(delivery_tag=delivery_tag, requeue=True)
+
+        channel.basic_consume(queue=config.QUEUE_NAME, on_message_callback=on_message, auto_ack=False)
+        logger.info("consumer_started queue=%s host=%s:%s", config.QUEUE_NAME, config.RABBITMQ_HOST, config.RABBITMQ_PORT)
+        try:
+            channel.start_consuming()
+        finally:
+            try:
+                if channel.is_open:
+                    channel.close()
+            finally:
+                if conn.is_open:
+                    conn.close()
