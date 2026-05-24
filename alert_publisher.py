@@ -102,14 +102,18 @@ def _ensure_firebase() -> bool:
 
         path = (config.FIREBASE_CREDENTIALS_PATH or "").strip()
         raw_json = (config.FIREBASE_CREDENTIALS_JSON or "").strip()
+        info = None
         if not path and not raw_json:
-            return False
+            info = _service_account_from_env()
+            if info is None:
+                return False
 
         try:
             if path:
                 cred = credentials.Certificate(path)
             else:
-                info = json.loads(raw_json)
+                if info is None:
+                    info = json.loads(raw_json)
                 cred = credentials.Certificate(info)
             firebase_admin.initialize_app(cred)
             _firebase_ready = True
@@ -117,3 +121,35 @@ def _ensure_firebase() -> bool:
         except Exception as exc:
             logger.warning("firebase_init_failed err=%s", exc)
             return False
+
+
+def _service_account_from_env() -> Optional[Dict[str, Any]]:
+    project_id = (config.FIREBASE_PROJECT_ID or "").strip()
+    private_key_id = (config.FIREBASE_PRIVATE_KEY_ID or "").strip()
+    private_key = (config.FIREBASE_PRIVATE_KEY or "").strip()
+    client_email = (config.FIREBASE_CLIENT_EMAIL or "").strip()
+    client_id = (config.FIREBASE_CLIENT_ID or "").strip()
+    client_x509_cert_url = (config.FIREBASE_CLIENT_X509_CERT_URL or "").strip()
+
+    if not project_id or not private_key_id or not private_key or not client_email or not client_id:
+        return None
+
+    private_key = private_key.replace("\\n", "\n")
+    if "BEGIN PRIVATE KEY" not in private_key:
+        return None
+
+    if not client_x509_cert_url:
+        client_x509_cert_url = f"https://www.googleapis.com/robot/v1/metadata/x509/{client_email}"
+
+    return {
+        "type": "service_account",
+        "project_id": project_id,
+        "private_key_id": private_key_id,
+        "private_key": private_key,
+        "client_email": client_email,
+        "client_id": client_id,
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": client_x509_cert_url,
+    }
