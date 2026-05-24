@@ -26,8 +26,19 @@ MAX_DT_SECONDS = _env_int("MAX_DT_SECONDS", 7200)
 ALERT_HTTP_URL = os.getenv("ALERT_HTTP_URL", "")
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "5"))
 
+FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH", "")
+FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON", "")
+FIREBASE_TOPIC = os.getenv("FIREBASE_TOPIC", "")
+FIREBASE_DEVICE_TOKENS = os.getenv("FIREBASE_DEVICE_TOKENS", "")
+
+MYSQL_HOST = os.getenv("MYSQL_HOST", "204.168.203.32")
+MYSQL_PORT = _env_int("MYSQL_PORT", 3306)
+MYSQL_USER = os.getenv("MYSQL_USER", "landslide")
+MYSQL_PASS = os.getenv("MYSQL_PASS", "")
+MYSQL_DB = os.getenv("MYSQL_DB", "landslide_monitoring")
+MYSQL_CONNECT_TIMEOUT_SECONDS = float(os.getenv("MYSQL_CONNECT_TIMEOUT_SECONDS", "5"))
+
 THRESHOLDS = {
     "shangtan": {"red": 20, "orange": 15, "blue": 10},
     "lingzhan": {"red": 15, "orange": 10, "blue": 5},
 }
-

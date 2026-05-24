@@ -80,8 +80,20 @@ class RabbitConsumer(threading.Thread):
                 if result.alert is not None:
                     publisher.publish_rabbitmq(result.alert)
                     publisher.publish_http(result.alert)
+                    try:
+                        tokens = self._cache.get_push_device_tokens(
+                            str(result.alert.get("project_id") or ""),
+                            str(result.alert.get("alert_level") or ""),
+                        )
+                        publisher.publish_push(result.alert, tokens=tokens)
+                    except Exception as exc:
+                        logger.warning("push_flow_failed err=%s", exc)
                     self._cache.incr_alerts_generated()
                     self._cache.push_recent_alert(result.alert)
+                    try:
+                        self._cache.record_alert_db(result.alert)
+                    except Exception as exc:
+                        logger.warning("db_record_failed err=%s", exc)
 
                 if result.should_store_current and result.store_payload is not None:
                     sid = payload.get("sensor_id")

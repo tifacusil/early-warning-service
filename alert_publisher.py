@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from typing import Any, Dict, Optional
 
 import pika
@@ -9,6 +10,18 @@ import config
 
 
 logger = logging.getLogger("early_warning.alert_publisher")
+_firebase_lock = threading.Lock()
+_firebase_ready = False
+_firebase_import_ok = True
+
+try:
+    import firebase_admin
+    from firebase_admin import credentials, messaging
+except ImportError:
+    firebase_admin = None
+    credentials = None
+    messaging = None
+    _firebase_import_ok = False
 
 
 class AlertPublisher:
@@ -41,3 +54,66 @@ class AlertPublisher:
         except requests.RequestException as exc:
             logger.warning("http_publish_failed url=%s err=%s", target, exc)
 
+    def publish_push(self, alert: Dict[str, Any], *, tokens: Optional[list[str]] = None, topic: Optional[str] = None) -> None:
+        if not _firebase_import_ok:
+            return
+        if not _ensure_firebase():
+            return
+
+        resolved_topic = (topic if topic is not None else config.FIREBASE_TOPIC).strip()
+        if tokens is None:
+            tokens_raw = (config.FIREBASE_DEVICE_TOKENS or "").strip()
+            resolved_tokens = [t.strip() for t in tokens_raw.split(",") if t.strip()] if tokens_raw else []
+        else:
+            resolved_tokens = [t for t in tokens if t]
+
+        level = str(alert.get("alert_level") or "")
+        sensor_id = str(alert.get("sensor_id") or "")
+        speed = alert.get("deformation_speed_mm_day")
+        speed_str = str(speed) if speed is not None else ""
+
+        notification = messaging.Notification(
+            title=f"Alerta {level.upper()}",
+            body=f"Sensor {sensor_id} velocidad {speed_str} mm/día",
+        )
+
+        data = {k: str(v) for k, v in alert.items() if v is not None}
+        data["type"] = "early_warning_alert"
+
+        try:
+            if resolved_topic:
+                messaging.send(messaging.Message(topic=resolved_topic, notification=notification, data=data))
+                return
+            if resolved_tokens:
+                messaging.send_multicast(messaging.MulticastMessage(tokens=resolved_tokens, notification=notification, data=data))
+        except Exception as exc:
+            logger.warning("push_publish_failed err=%s", exc)
+
+
+def _ensure_firebase() -> bool:
+    global _firebase_ready
+    if not _firebase_import_ok:
+        return False
+    if _firebase_ready:
+        return True
+    with _firebase_lock:
+        if _firebase_ready:
+            return True
+
+        path = (config.FIREBASE_CREDENTIALS_PATH or "").strip()
+        raw_json = (config.FIREBASE_CREDENTIALS_JSON or "").strip()
+        if not path and not raw_json:
+            return False
+
+        try:
+            if path:
+                cred = credentials.Certificate(path)
+            else:
+                info = json.loads(raw_json)
+                cred = credentials.Certificate(info)
+            firebase_admin.initialize_app(cred)
+            _firebase_ready = True
+            return True
+        except Exception as exc:
+            logger.warning("firebase_init_failed err=%s", exc)
+            return False

@@ -10,6 +10,8 @@ Jinja2==3.1.6
 MarkupSafe==3.0.3
 pika==1.4.0
 python-dotenv==1.1.1
+firebase-admin==7.4.0
+PyMySQL==1.1.1
 redis==7.4.0
 requests==2.34.2
 urllib3==2.7.0
