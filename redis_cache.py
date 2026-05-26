@@ -282,16 +282,21 @@ class RedisCache:
         conn = self._mysql_connect()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT content_json
-                    FROM reports
-                    WHERE project_id = %s AND period = %s
-                    ORDER BY generated_at DESC
-                    LIMIT 1
-                    """,
-                    (project_id, period),
-                )
+                try:
+                    cur.execute(
+                        """
+                        SELECT content_json
+                        FROM reports
+                        WHERE project_id = %s AND period = %s
+                        ORDER BY generated_at DESC
+                        LIMIT 1
+                        """,
+                        (project_id, period),
+                    )
+                except pymysql.err.ProgrammingError as exc:
+                    if exc.args and exc.args[0] == 1146:
+                        return None
+                    raise
                 row = cur.fetchone()
                 if not row or not row.get("content_json"):
                     return None
@@ -313,16 +318,21 @@ class RedisCache:
         conn = self._mysql_connect()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id
-                    FROM reports
-                    WHERE project_id = %s AND period = %s AND window_start = %s AND window_end = %s
-                    LIMIT 1
-                    """,
-                    (project_id, period, ws, we),
-                )
-                return cur.fetchone() is not None
+                try:
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM reports
+                        WHERE project_id = %s AND period = %s AND window_start = %s AND window_end = %s
+                        LIMIT 1
+                        """,
+                        (project_id, period, ws, we),
+                    )
+                    return cur.fetchone() is not None
+                except pymysql.err.ProgrammingError as exc:
+                    if exc.args and exc.args[0] == 1146:
+                        return False
+                    raise
         finally:
             conn.close()
 
@@ -330,24 +340,29 @@ class RedisCache:
         ws = _parse_mysql_datetime(window_start)
         we = _parse_mysql_datetime(window_end)
         if not project_id or not ws or not we:
-            return {"total": 0, "by_level": {"blue": 0, "orange": 0, "red": 0}, "max_speed_mm_day": None, "avg_speed_mm_day": None}
+            return _empty_alert_summary()
 
         conn = self._mysql_connect()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT
-                        alert_level,
-                        COUNT(*) AS cnt,
-                        MAX(deformation_speed_mm_day) AS max_speed,
-                        AVG(deformation_speed_mm_day) AS avg_speed
-                    FROM alerts
-                    WHERE project_id = %s AND alert_timestamp >= %s AND alert_timestamp < %s
-                    GROUP BY alert_level
-                    """,
-                    (project_id, ws, we),
-                )
+                try:
+                    cur.execute(
+                        """
+                        SELECT
+                            alert_level,
+                            COUNT(*) AS cnt,
+                            MAX(deformation_speed_mm_day) AS max_speed,
+                            AVG(deformation_speed_mm_day) AS avg_speed
+                        FROM alerts
+                        WHERE project_id = %s AND alert_timestamp >= %s AND alert_timestamp < %s
+                        GROUP BY alert_level
+                        """,
+                        (project_id, ws, we),
+                    )
+                except pymysql.err.ProgrammingError as exc:
+                    if exc.args and exc.args[0] == 1146:
+                        return _empty_alert_summary()
+                    raise
                 rows = list(cur.fetchall())
 
                 by = {"blue": 0, "orange": 0, "red": 0}
@@ -405,3 +420,7 @@ def _parse_mysql_datetime(value: Any) -> Optional[str]:
         dt = dt.replace(tzinfo=timezone.utc)
     dt = dt.astimezone(timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _empty_alert_summary() -> Dict[str, Any]:
+    return {"total": 0, "by_level": {"blue": 0, "orange": 0, "red": 0}, "max_speed_mm_day": None, "avg_speed_mm_day": None}
