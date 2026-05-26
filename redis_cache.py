@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import pymysql
@@ -18,12 +18,45 @@ def _level_value(level: str) -> int:
     return 0
 
 
-def _in_quiet_hours(start: Optional[time], end: Optional[time], now: time) -> bool:
-    if start is None or end is None:
+def _normalize_time(value: Any) -> Optional[time]:
+    if value is None:
+        return None
+    if isinstance(value, time):
+        return value
+    if isinstance(value, timedelta):
+        total = int(value.total_seconds())
+        total = total % 86400
+        h = total // 3600
+        m = (total % 3600) // 60
+        s = total % 60
+        return time(hour=h, minute=m, second=s)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        parts = raw.split(":")
+        if len(parts) < 2:
+            return None
+        try:
+            h = int(parts[0])
+            m = int(parts[1])
+            s = int(parts[2]) if len(parts) >= 3 else 0
+        except ValueError:
+            return None
+        if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
+            return None
+        return time(hour=h, minute=m, second=s)
+    return None
+
+
+def _in_quiet_hours(start: Any, end: Any, now: time) -> bool:
+    start_t = _normalize_time(start)
+    end_t = _normalize_time(end)
+    if start_t is None or end_t is None:
         return False
-    if start <= end:
-        return start <= now <= end
-    return now >= start or now <= end
+    if start_t <= end_t:
+        return start_t <= now <= end_t
+    return now >= start_t or now <= end_t
 
 
 class RedisCache:
