@@ -77,11 +77,57 @@ class AlertPublisher:
         payload = {k: str(v) for k, v in data.items() if v is not None}
 
         try:
-            if resolved_topic:
-                messaging.send(messaging.Message(topic=resolved_topic, notification=notification, data=payload))
-                return
             if resolved_tokens:
-                messaging.send_multicast(messaging.MulticastMessage(tokens=resolved_tokens, notification=notification, data=payload))
+                if len(resolved_tokens) == 1:
+                    messaging.send(
+                        messaging.Message(
+                            token=resolved_tokens[0],
+                            notification=notification,
+                            data=payload,
+                            android=messaging.AndroidConfig(priority="high"),
+                            apns=messaging.APNSConfig(headers={"apns-priority": "10"}),
+                        )
+                    )
+                    return
+
+                multicast = messaging.MulticastMessage(
+                    tokens=resolved_tokens,
+                    notification=notification,
+                    data=payload,
+                    android=messaging.AndroidConfig(priority="high"),
+                    apns=messaging.APNSConfig(headers={"apns-priority": "10"}),
+                )
+
+                if hasattr(messaging, "send_multicast"):
+                    messaging.send_multicast(multicast)
+                elif hasattr(messaging, "send_each_for_multicast"):
+                    messaging.send_each_for_multicast(multicast)
+                elif hasattr(messaging, "send_all"):
+                    batch = [
+                        messaging.Message(
+                            token=t,
+                            notification=notification,
+                            data=payload,
+                            android=messaging.AndroidConfig(priority="high"),
+                            apns=messaging.APNSConfig(headers={"apns-priority": "10"}),
+                        )
+                        for t in resolved_tokens
+                    ]
+                    messaging.send_all(batch)
+                else:
+                    raise RuntimeError("no_firebase_multicast_api_available")
+                return
+            if resolved_topic:
+                messaging.send(
+                    messaging.Message(
+                        topic=resolved_topic,
+                        notification=notification,
+                        data=payload,
+                        android=messaging.AndroidConfig(priority="high"),
+                        apns=messaging.APNSConfig(headers={"apns-priority": "10"}),
+                    )
+                )
+                return
         except Exception as exc:
             logger.warning("push_publish_failed err=%s", exc)
 
