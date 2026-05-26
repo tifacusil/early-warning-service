@@ -48,9 +48,11 @@ class RabbitConsumer(threading.Thread):
 
     def _consume_once(self) -> None:
         conn = pika.BlockingConnection(_connection_params())
-        channel = conn.channel()
-        channel.basic_qos(prefetch_count=20)
-        publisher = AlertPublisher(channel)
+        consume_channel = conn.channel()
+        consume_channel.basic_qos(prefetch_count=20)
+
+        publish_channel = conn.channel()
+        publisher = AlertPublisher(publish_channel)
 
         def on_message(ch: Any, method: Any, properties: Any, body: bytes) -> None:
             delivery_tag = method.delivery_tag
@@ -71,24 +73,36 @@ class RabbitConsumer(threading.Thread):
 
                 result = evaluate_message(payload, previous)
                 logger.info(
-                    "eval sensor=%s project=%s speed=%s dt=%s threshold=%s level=%s skip=%s",
+                    "eval sensor=%s project=%s ts=%s prev_ts=%s speed=%s dt=%s threshold=%s level=%s skip=%s note=%s",
                     result.log_fields.get("sensor_id"),
                     result.log_fields.get("project_id"),
+                    result.log_fields.get("timestamp"),
+                    result.log_fields.get("previous_timestamp"),
                     result.log_fields.get("deformation_speed_mm_day"),
                     result.log_fields.get("dt_seconds"),
                     result.log_fields.get("threshold_mm_day"),
                     result.log_fields.get("alert"),
                     result.log_fields.get("skip_reason"),
+                    result.log_fields.get("note"),
                 )
 
                 if result.alert is not None:
-                    publisher.publish_rabbitmq(result.alert)
+                    try:
+                        publisher.publish_rabbitmq(result.alert)
+                    except Exception as exc:
+                        logger.warning("rabbit_alert_publish_failed err=%s", exc)
                     publisher.publish_http(result.alert)
                     try:
                         tokens = self._cache.get_push_device_tokens(
                             str(result.alert.get("project_id") or ""),
                             str(result.alert.get("alert_level") or ""),
                         )
+                        if not tokens:
+                            logger.info(
+                                "push_no_recipients project=%s level=%s",
+                                str(result.alert.get("project_id") or ""),
+                                str(result.alert.get("alert_level") or ""),
+                            )
                         publisher.publish_push(result.alert, tokens=tokens)
                     except Exception as exc:
                         logger.warning("push_flow_failed err=%s", exc)
@@ -112,14 +126,16 @@ class RabbitConsumer(threading.Thread):
                 logger.exception("process_failed err=%s", exc)
                 ch.basic_nack(delivery_tag=delivery_tag, requeue=True)
 
-        channel.basic_consume(queue=config.QUEUE_NAME, on_message_callback=on_message, auto_ack=False)
+        consume_channel.basic_consume(queue=config.QUEUE_NAME, on_message_callback=on_message, auto_ack=False)
         logger.info("consumer_started queue=%s host=%s:%s", config.QUEUE_NAME, config.RABBITMQ_HOST, config.RABBITMQ_PORT)
         try:
-            channel.start_consuming()
+            consume_channel.start_consuming()
         finally:
             try:
-                if channel.is_open:
-                    channel.close()
+                if consume_channel.is_open:
+                    consume_channel.close()
+                if publish_channel.is_open:
+                    publish_channel.close()
             finally:
                 if conn.is_open:
                     conn.close()
