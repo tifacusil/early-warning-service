@@ -116,7 +116,7 @@ def evaluate_message(message: Dict[str, Any], previous: Optional[Dict[str, Any]]
     }
 
     if dt_seconds <= 0:
-        return EvalResult(False, None, None, {**log_fields, "skip_reason": "out_of_order_or_duplicate_timestamp"})
+        return EvalResult(True, store_current, None, {**log_fields, "note": "non_positive_dt_overwrite_baseline"})
 
     if dt_seconds > config.MAX_DT_SECONDS:
         return EvalResult(True, store_current, None, {**log_fields, "skip_reason": "gap_too_large_reset"})
