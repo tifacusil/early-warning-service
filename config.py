@@ -41,7 +41,7 @@ MYSQL_HOST = os.getenv("MYSQL_HOST", "204.168.203.32")
 MYSQL_PORT = _env_int("MYSQL_PORT", 3306)
 MYSQL_USER = os.getenv("MYSQL_USER", "landslide")
 MYSQL_PASS = os.getenv("MYSQL_PASS", "")
-MYSQL_DB = os.getenv("MYSQL_DB", "landslide_monitoring")
+MYSQL_DB = os.getenv("MYSQL_DB", "early_warning_db")
 MYSQL_CONNECT_TIMEOUT_SECONDS = float(os.getenv("MYSQL_CONNECT_TIMEOUT_SECONDS", "5"))
 
 DATA_ANALYSIS_URL = os.getenv("DATA_ANALYSIS_URL", "")

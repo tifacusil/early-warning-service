@@ -27,7 +27,7 @@ Microservice responsible for GNSS deformation-speed evaluation, alert generation
 | Python | 3.10+ | Recommended: virtualenv/venv |
 | RabbitMQ | 3.x | Queue `early_warning.evaluate` must already exist (service does not declare it) |
 | Redis | 6.x+ | Used for last-reading cache, recent alerts, counters |
-| MySQL | 8.x | Uses `landslide_monitoring`; `users/subscriptions/devices` tables must exist |
+| MySQL | 8.x | Uses `early_warning_db`; `users/subscriptions/devices` tables must exist |
 | Firebase | — | FCM via `firebase-admin` (service account required) |
 
 ---
@@ -76,7 +76,7 @@ All configuration is driven by environment variables. The service reads a `.env`
 | `MYSQL_PORT` | `3306` | MySQL port |
 | `MYSQL_USER` | `landslide` | MySQL username |
 | `MYSQL_PASS` | `""` | MySQL password |
-| `MYSQL_DB` | `landslide_monitoring` | Database name |
+| `MYSQL_DB` | `early_warning_db` | Database name |
 | `MYSQL_CONNECT_TIMEOUT_SECONDS` | `5` | Connection timeout |
 
 > **Recipients data model:** the service reads `users`, `user_project_alert_subscription`, and `user_device` following `modelo-destinatarios-3A2.md`.
