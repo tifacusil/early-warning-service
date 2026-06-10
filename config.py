@@ -51,6 +51,22 @@ REPORT_SCHEDULER_ENABLED = os.getenv("REPORT_SCHEDULER_ENABLED", "true").lower()
 REPORT_CHECK_INTERVAL_SECONDS = _env_int("REPORT_CHECK_INTERVAL_SECONDS", 60)
 REPORT_PUSH_ENABLED = os.getenv("REPORT_PUSH_ENABLED", "true").lower() == "true"
 
+CONSUL_ENABLED = os.getenv("CONSUL_ENABLED", "true").lower() == "true"
+CONSUL_HOST = os.getenv("CONSUL_HOST", "127.0.0.1")
+CONSUL_PORT = _env_int("CONSUL_PORT", 8500)
+CONSUL_SCHEME = os.getenv("CONSUL_SCHEME", "http")
+CONSUL_TOKEN = os.getenv("CONSUL_TOKEN", "")
+CONSUL_SERVICE_NAME = os.getenv("CONSUL_SERVICE_NAME", "early-warning-service")
+CONSUL_SERVICE_ID = os.getenv("CONSUL_SERVICE_ID", "")
+# Direccion/puerto con que este servicio se anuncia a Consul para el health check.
+# Por defecto el puerto Flask; el host debe ser alcanzable por el agente Consul.
+CONSUL_SERVICE_ADDRESS = os.getenv("CONSUL_SERVICE_ADDRESS", "")
+CONSUL_SERVICE_PORT = _env_int("CONSUL_SERVICE_PORT", FLASK_PORT)
+CONSUL_HEALTH_INTERVAL = os.getenv("CONSUL_HEALTH_INTERVAL", "10s")
+CONSUL_HEALTH_TIMEOUT = os.getenv("CONSUL_HEALTH_TIMEOUT", "5s")
+CONSUL_DEREGISTER_AFTER = os.getenv("CONSUL_DEREGISTER_AFTER", "1m")
+CONSUL_TAGS = [t.strip() for t in os.getenv("CONSUL_TAGS", "").split(",") if t.strip()]
+
 THRESHOLDS = {
     "shangtan": {"red": 20, "orange": 15, "blue": 10},
     "lingzhan": {"red": 15, "orange": 10, "blue": 5},

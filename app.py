@@ -1,3 +1,4 @@
+import atexit
 import logging
 import threading
 import uuid
@@ -390,4 +391,15 @@ if __name__ == "__main__":
     consumer.start()
     if config.REPORT_SCHEDULER_ENABLED:
         ReportScheduler().start()
+
+    if config.CONSUL_ENABLED:
+        try:
+            from consul_registrar import ConsulRegistrar
+
+            registrar = ConsulRegistrar()
+            registrar.register()
+            atexit.register(registrar.deregister)
+        except Exception as exc:
+            logging.getLogger("early_warning.consul").warning("consul_setup_failed err=%s", exc)
+
     app.run(host="0.0.0.0", port=config.FLASK_PORT, debug=False, use_reloader=False)
