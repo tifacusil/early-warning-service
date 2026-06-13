@@ -51,7 +51,8 @@ class RabbitConsumer(threading.Thread):
         consume_channel = conn.channel()
         consume_channel.basic_qos(prefetch_count=20)
 
-        publish_channel = conn.channel()
+        publish_conn = pika.BlockingConnection(_connection_params())
+        publish_channel = publish_conn.channel()
         publisher = AlertPublisher(publish_channel)
 
         def on_message(ch: Any, method: Any, properties: Any, body: bytes) -> None:
@@ -134,8 +135,12 @@ class RabbitConsumer(threading.Thread):
             try:
                 if consume_channel.is_open:
                     consume_channel.close()
-                if publish_channel.is_open:
-                    publish_channel.close()
             finally:
                 if conn.is_open:
                     conn.close()
+            try:
+                if publish_channel.is_open:
+                    publish_channel.close()
+            finally:
+                if publish_conn.is_open:
+                    publish_conn.close()

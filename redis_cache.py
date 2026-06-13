@@ -1,11 +1,15 @@
 import json
+import logging
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import pymysql
 import redis
+import requests
 
 import config
+
+logger = logging.getLogger(__name__)
 
 
 def _level_value(level: str) -> int:
@@ -174,91 +178,52 @@ class RedisCache:
         finally:
             conn.close()
 
+    def _fetch_subscriptions(self, project_id: str) -> List[Dict[str, Any]]:
+        url = f"{config.USER_MANAGEMENT_URL}/api/v1/users/subscriptions"
+        headers = {"X-Api-Key": config.USER_MANAGEMENT_TOKEN}
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=config.USER_MANAGEMENT_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return [s for s in data if s.get("projectId") == project_id]
+
     def get_push_device_tokens(self, project_id: str, alert_level: str) -> List[str]:
         if not project_id or not alert_level:
             return []
         if _level_value(alert_level) == 0:
             return []
 
-        conn = self._mysql_connect()
-
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT
-                        s.user_id,
-                        s.min_alert_level,
-                        s.push_enabled,
-                        s.quiet_hours_start,
-                        s.quiet_hours_end
-                    FROM user_project_alert_subscription s
-                    INNER JOIN users u ON u.id = s.user_id
-                    WHERE
-                        s.project_id = %s
-                        AND u.status = 'active'
-                        AND s.push_enabled = TRUE
-                    """,
-                    (project_id,),
-                )
-                subs = list(cur.fetchall())
-
-                now = datetime.now(timezone.utc).time()
-                allowed_user_ids: List[int] = []
-                for row in subs:
-                    min_level = str(row.get("min_alert_level") or "")
-                    if _level_value(min_level) == 0:
-                        continue
-                    if _level_value(min_level) > _level_value(alert_level):
-                        continue
-
-                    start = row.get("quiet_hours_start")
-                    end = row.get("quiet_hours_end")
-                    if alert_level != "red" and _in_quiet_hours(start, end, now):
-                        continue
-                    allowed_user_ids.append(int(row["user_id"]))
-
-                if not allowed_user_ids:
-                    return []
-
-                placeholders = ",".join(["%s"] * len(allowed_user_ids))
-                cur.execute(
-                    f"""
-                    SELECT device_token
-                    FROM user_device
-                    WHERE user_id IN ({placeholders}) AND status = 'active'
-                    """,
-                    tuple(allowed_user_ids),
-                )
-                tokens = [str(r["device_token"]) for r in cur.fetchall() if r.get("device_token")]
-                return list({t for t in tokens if t})
-        finally:
-            conn.close()
+        subs = self._fetch_subscriptions(project_id)
+        now = datetime.now(timezone.utc).time()
+        tokens: List[str] = []
+        for sub in subs:
+            if not sub.get("pushEnabled"):
+                continue
+            min_level = str(sub.get("minAlertLevel") or "")
+            if _level_value(min_level) == 0:
+                continue
+            if _level_value(min_level) > _level_value(alert_level):
+                continue
+            if alert_level != "red" and _in_quiet_hours(
+                sub.get("quietHoursStart"), sub.get("quietHoursEnd"), now
+            ):
+                continue
+            tokens.extend(t for t in (sub.get("fcm_tokens") or []) if t)
+        return list(set(tokens))
 
     def get_push_device_tokens_for_project(self, project_id: str) -> List[str]:
         if not project_id:
             return []
-        conn = self._mysql_connect()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT d.device_token
-                    FROM user_project_alert_subscription s
-                    INNER JOIN users u ON u.id = s.user_id
-                    INNER JOIN user_device d ON d.user_id = u.id
-                    WHERE
-                        s.project_id = %s
-                        AND u.status = 'active'
-                        AND s.push_enabled = TRUE
-                        AND d.status = 'active'
-                    """,
-                    (project_id,),
-                )
-                tokens = [str(r["device_token"]) for r in cur.fetchall() if r.get("device_token")]
-                return list({t for t in tokens if t})
-        finally:
-            conn.close()
+        subs = self._fetch_subscriptions(project_id)
+        tokens: List[str] = []
+        for sub in subs:
+            if not sub.get("pushEnabled"):
+                continue
+            tokens.extend(t for t in (sub.get("fcm_tokens") or []) if t)
+        return list(set(tokens))
 
     def upsert_report_db(self, report: Dict[str, Any]) -> None:
         conn = self._mysql_connect()
