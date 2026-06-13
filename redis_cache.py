@@ -188,7 +188,15 @@ class RedisCache:
         )
         resp.raise_for_status()
         data = resp.json()
-        return [s for s in data if s.get("projectId") == project_id]
+        logger.debug(
+            "subscriptions_fetched total=%d project=%s matched=%d",
+            len(data),
+            project_id,
+            len([s for s in data if s.get("projectId") == project_id]),
+        )
+        if not data:
+            logger.warning("subscriptions_empty_response url=%s status=%d", url, resp.status_code)
+        return [s for s in data if s.get("project_id") == project_id]
 
     def get_push_device_tokens(self, project_id: str, alert_level: str) -> List[str]:
         if not project_id or not alert_level:
@@ -197,21 +205,31 @@ class RedisCache:
             return []
 
         subs = self._fetch_subscriptions(project_id)
+        logger.warning(
+            "push_token_resolution project=%s level=%s subs_matched=%d",
+            project_id, alert_level, len(subs),
+        )
         now = datetime.now(timezone.utc).time()
         tokens: List[str] = []
         for sub in subs:
-            if not sub.get("pushEnabled"):
+            if not sub.get("push_enabled"):
+                logger.warning("push_skip sub_id=%s reason=push_disabled", sub.get("id"))
                 continue
-            min_level = str(sub.get("minAlertLevel") or "")
+            min_level = str(sub.get("min_alert_level") or "")
             if _level_value(min_level) == 0:
+                logger.warning("push_skip sub_id=%s reason=invalid_min_level val=%s", sub.get("id"), min_level)
                 continue
             if _level_value(min_level) > _level_value(alert_level):
+                logger.warning("push_skip sub_id=%s reason=level_too_low min=%s alert=%s", sub.get("id"), min_level, alert_level)
                 continue
             if alert_level != "red" and _in_quiet_hours(
-                sub.get("quietHoursStart"), sub.get("quietHoursEnd"), now
+                sub.get("quiet_hours_start"), sub.get("quiet_hours_end"), now
             ):
+                logger.warning("push_skip sub_id=%s reason=quiet_hours", sub.get("id"))
                 continue
-            tokens.extend(t for t in (sub.get("fcm_tokens") or []) if t)
+            sub_tokens = [t for t in (sub.get("fcm_tokens") or []) if t]
+            logger.warning("push_sub_tokens sub_id=%s tokens=%d", sub.get("id"), len(sub_tokens))
+            tokens.extend(sub_tokens)
         return list(set(tokens))
 
     def get_push_device_tokens_for_project(self, project_id: str) -> List[str]:
@@ -220,7 +238,7 @@ class RedisCache:
         subs = self._fetch_subscriptions(project_id)
         tokens: List[str] = []
         for sub in subs:
-            if not sub.get("pushEnabled"):
+            if not sub.get("push_enabled"):
                 continue
             tokens.extend(t for t in (sub.get("fcm_tokens") or []) if t)
         return list(set(tokens))
