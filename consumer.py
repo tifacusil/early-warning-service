@@ -9,6 +9,7 @@ import pika
 
 import config
 from alert_publisher import AlertPublisher
+from metrics import MESSAGES_PROCESSED, PERSIST_LATENCY
 from redis_cache import RedisCache
 from threshold_engine import evaluate_message
 
@@ -110,7 +111,8 @@ class RabbitConsumer(threading.Thread):
                     self._cache.incr_alerts_generated()
                     self._cache.push_recent_alert(result.alert)
                     try:
-                        self._cache.record_alert_db(result.alert)
+                        with PERSIST_LATENCY.time():
+                            self._cache.record_alert_db(result.alert)
                     except Exception as exc:
                         logger.warning("db_record_failed err=%s", exc)
 
@@ -120,6 +122,7 @@ class RabbitConsumer(threading.Thread):
                         self._cache.set_last_reading(sid, result.store_payload)
 
                 ch.basic_ack(delivery_tag=delivery_tag)
+                MESSAGES_PROCESSED.inc()
             except json.JSONDecodeError:
                 logger.warning("json_decode_error body_len=%s", len(body))
                 ch.basic_ack(delivery_tag=delivery_tag)

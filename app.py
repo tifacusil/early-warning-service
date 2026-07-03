@@ -7,6 +7,7 @@ from typing import Optional
 
 from flask import Flask, Response, jsonify, request
 from dotenv import load_dotenv
+from prometheus_flask_exporter import PrometheusMetrics
 import requests
 
 load_dotenv()
@@ -27,6 +28,10 @@ cache = RedisCache()
 consumer = RabbitConsumer(cache)
 
 app = Flask(__name__)
+
+# Expone /metrics para Prometheus: process_cpu_seconds_total, process_resident_memory_bytes,
+# flask_http_request_* y las metricas custom ew_* definidas en metrics.py.
+metrics = PrometheusMetrics(app, group_by="endpoint")
 
 
 def _openapi_spec() -> dict:
