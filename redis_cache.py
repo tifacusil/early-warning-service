@@ -22,6 +22,68 @@ def _level_value(level: str) -> int:
     return 0
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+# Guarda del baseline: la escritura solo aterriza si la almacenada es mas vieja.
+#
+# El servicio corre 2 instancias sobre la misma cola, asi que las dos pueden
+# tener a la vez dos mensajes del mismo sensor, leer el mismo baseline y
+# escribirlo las dos. Gana la ultima en escribir, de modo que si el mensaje mas
+# viejo termina ultimo el baseline retrocede a un instante anterior — y el
+# mensaje siguiente calcula su velocidad contra esa lectura vieja: dt grande,
+# desplazamiento sin relacion, y cruce de umbral espurio. Es exactamente la
+# falla que threshold_engine se niega a provocar por su cuenta
+# ("out_of_order_or_duplicate_timestamp"), reintroducida por el cache.
+#
+# Es una guarda, no un lock: codifica el invariante ("el baseline nunca
+# retrocede en el tiempo") en el unico lugar que puede imponerlo atomicamente,
+# cuesta el mismo round trip que el SET plano, y no deja lease que renovar ni
+# que se filtre si una instancia muere a mitad de la evaluacion. Lo que NO
+# evita es que las dos instancias evaluen contra el mismo baseline apenas
+# viejo; eso da una velocidad promediada sobre una ventana mas larga, que es
+# conservador, y converge apenas aterriza una de las escrituras.
+#
+# La comparacion es sobre timestamp_unix_us y no sobre el string ISO: los
+# timestamps con sub-segundo no ordenan lexicograficamente ("...:00Z" >
+# "...:00.5Z" como texto, y al reves en el tiempo). Los microsegundos son mas
+# finos que el formato de cable (que lleva milisegundos) y siguen siendo
+# exactos como double de Lua/cjson.
+#
+# Una entrada escrita antes de que el campo existiera no tiene score y se
+# sobreescribe sin condicion: el comportamiento anterior, que se auto-corrige
+# en la primera escritura.
+_BASELINE_CAS = """
+local raw = redis.call('GET', KEYS[1])
+if raw then
+  local ok, stored = pcall(cjson.decode, raw)
+  if ok and type(stored) == 'table' then
+    local at = tonumber(stored.timestamp_unix_us)
+    if at and at >= tonumber(ARGV[2]) then
+      return 0
+    end
+  end
+end
+redis.call('SET', KEYS[1], ARGV[1])
+return 1
+"""
+
+
+def _timestamp_micros(value: Any) -> Optional[int]:
+    """Microsegundos desde epoch de un timestamp ISO, o None si no se parsea."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    # Aritmetica entera, no parsed.timestamp() * 1e6: el float pierde
+    # resolucion de microsegundo a la escala de los timestamps actuales.
+    delta = parsed - _EPOCH
+    return delta.days * 86400 * 10**6 + delta.seconds * 10**6 + delta.microseconds
+
+
 def _normalize_time(value: Any) -> Optional[time]:
     if value is None:
         return None
@@ -96,8 +158,23 @@ class RedisCache:
             return None
         return value
 
-    def set_last_reading(self, sensor_id: str, reading: Dict[str, Any]) -> None:
-        self._client.set(self.last_key(sensor_id), json.dumps(reading, separators=(",", ":")))
+    def set_last_reading(self, sensor_id: str, reading: Dict[str, Any]) -> bool:
+        """Guarda el baseline salvo que ya haya uno mas nuevo. Ver _BASELINE_CAS.
+
+        Devuelve si la escritura aterrizo.
+        """
+        key = self.last_key(sensor_id)
+        micros = _timestamp_micros(reading.get("timestamp"))
+        if micros is None:
+            # Sin timestamp usable no hay contra que comparar.
+            self._client.set(key, json.dumps(reading, separators=(",", ":")))
+            return True
+        payload = dict(reading)
+        payload["timestamp_unix_us"] = micros
+        written = self._client.eval(
+            _BASELINE_CAS, 1, key, json.dumps(payload, separators=(",", ":")), micros
+        )
+        return bool(int(written))
 
     def incr_alerts_generated(self) -> int:
         return int(self._client.incr(self.alerts_count_key()))

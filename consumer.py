@@ -119,7 +119,14 @@ class RabbitConsumer(threading.Thread):
                 if result.should_store_current and result.store_payload is not None:
                     sid = payload.get("sensor_id")
                     if isinstance(sid, str) and sid:
-                        self._cache.set_last_reading(sid, result.store_payload)
+                        # Que no aterrice significa que la otra instancia ya
+                        # guardo una lectura mas nueva de este sensor mientras
+                        # evaluabamos; quedarse con la de ella es el punto (ver
+                        # _BASELINE_CAS). Se loguea porque una tasa sostenida de
+                        # esto es la senal de que el solapamiento entre
+                        # instancias sobre un sensor se volvio habitual.
+                        if not self._cache.set_last_reading(sid, result.store_payload):
+                            logger.info("baseline_write_superseded sensor_id=%s", sid)
 
                 ch.basic_ack(delivery_tag=delivery_tag)
                 MESSAGES_PROCESSED.inc()
