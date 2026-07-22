@@ -116,7 +116,18 @@ def evaluate_message(message: Dict[str, Any], previous: Optional[Dict[str, Any]]
     }
 
     if dt_seconds <= 0:
-        return EvalResult(True, store_current, None, {**log_fields, "note": "non_positive_dt_overwrite_baseline"})
+        # El mensaje no es mas nuevo que el baseline: llego fuera de orden (o
+        # comparte timestamp, algo habitual porque la resolucion del timestamp
+        # de origen es de 1 segundo). Se descarta SIN tocar el baseline.
+        #
+        # Esto revierte b7fbe66, que lo habia cambiado a sobreescribir. Con
+        # sobreescritura el baseline retrocede a un instante viejo, y el mensaje
+        # SIGUIENTE calcula su velocidad contra esa lectura vieja: dt grande,
+        # desplazamiento sin relacion, y cruce de umbral espurio. Medido en un
+        # barrido de desorden (motor real contra Redis, 1 hilo, sin
+        # concurrencia): la tasa de alerta pasaba de 0.29% a 8.00% (27x), todas
+        # `red`, sin deformacion real.
+        return EvalResult(False, None, None, {**log_fields, "skip_reason": "out_of_order_or_duplicate_timestamp"})
 
     if dt_seconds > config.MAX_DT_SECONDS:
         return EvalResult(True, store_current, None, {**log_fields, "skip_reason": "gap_too_large_reset"})
