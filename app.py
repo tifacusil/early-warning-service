@@ -31,7 +31,16 @@ app = Flask(__name__)
 
 # Expone /metrics para Prometheus: process_cpu_seconds_total, process_resident_memory_bytes,
 # flask_http_request_* y las metricas custom ew_* definidas en metrics.py.
-metrics = PrometheusMetrics(app, group_by="endpoint")
+#
+# buckets explicito: sin esto, prometheus_flask_exporter usa el default de
+# prometheus_client (.005 .01 .025 .05 .075 .1 .25 .5 .75 1 2.5 5 7.5 10), que
+# no coincide con el SLO de Micrometer en data-management/project-management
+# (5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s) ni con los buckets del cliente Go
+# en Sistema B. histogram_quantile interpola distinto segun los cortes del
+# histograma, asi que percentiles con buckets distintos no son comparables
+# aunque las muestras de origen sean identicas.
+_HTTP_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5)
+metrics = PrometheusMetrics(app, group_by="endpoint", buckets=_HTTP_BUCKETS)
 
 
 def _openapi_spec() -> dict:
